@@ -5,20 +5,37 @@
 #include <stdlib.h>
 #define TRUE 1
 #define FALSE 0
-#define INTERVALO 1000 //Valor do intervalo utilizado pelos nos para procurar por numeros primos
+#define INTERVALO 100000
 #define forever for(;;)
 
+#define mpi_send(X,NODE,MPI) MPI_Send(&X, 1, MPI_INT, NODE, MPI.tag, MPI_COMM_WORLD)
+#define mpi_recv(X,NODE,MPI) MPI_Recv(&X, 1, MPI_INT, NODE, MPI.tag, MPI_COMM_WORLD, &MPI.status)
+#define mpi_recv_any(X,MPI) MPI_Recv(&X, 1, MPI_INT, MPI_ANY_SOURCE, MPI.tag, MPI_COMM_WORLD, &MPI.status)
+#define mpi_irecv(X,NODE,MPI) MPI_Irecv(&X, 1, MPI_INT, NODE, MPI.tag, MPI_COMM_WORLD, &MPI.request)
+
+typedef struct {
+  int superior, inferior, anterior;
+} intervalo;
+
+typedef struct {
+  int ret, rank, size, tag;
+  MPI_Status status;
+  MPI_Request request;
+} mpi_data;
+
 int verificaPrimo(int inf);
+void recebeNovoIntervalo(intervalo *it);
 
 int main(int argc, char *argv[]) {
 
-  int ret, rank, size,tag,i, j;
+  int i, j;
   int pos1, resultado;
-  int superior, inferior, anterior, anterior2;
-  int aux;
-  int menosUm = -1;
-  int atual;
+  int dump;
+  int startSignal = -1;
   int contador;
+  intervalo it;
+  mpi_data mpi;
+  FILE * arq;
 
   /*
    * Vetor de inteiros que armazena os limites de cada um dos hosts para que 
@@ -29,47 +46,38 @@ int main(int argc, char *argv[]) {
 
   //variaveis da biblioteca gmp utilizadas durante a execucao
   mpz_t numeroGeral, numeroCorrente;
-
   //Inicializacao das variaveis
   mpz_init(numeroGeral);
   mpz_init(numeroCorrente);
 
   //Variaveis de status e request utilizadas pelo MPI
-  MPI_Status status;
-  MPI_Request request;
 
-  FILE * arq;
+  mpi.ret = MPI_Init(&argc, &argv);
+  mpi.ret = MPI_Comm_rank(MPI_COMM_WORLD, &mpi.rank);
+  mpi.ret = MPI_Comm_size(MPI_COMM_WORLD, &mpi.size);
 
-  ret = MPI_Init(&argc, &argv);
-
-  ret = MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-  ret = MPI_Comm_size(MPI_COMM_WORLD, &size);
-
-  tag=100;
-
-  //Arquivo onde sao salvos os numeros primos encontrados
   arq = fopen("encontrados.txt", "w+");
 
   //Se o rank for igual a zero indica que o nó é o mestre.
-  if (rank  == 0) {
+  if (mpi.rank  == 0) {
     double t1, t2; //variaveis de tempo
 
     /*
      * Este for é responsavel por enviar os limites inferiores dos 
-     * intervalos para cada um dos nós
+     * INTERVALOs para cada um dos nós
      */
-    for (i=0; i<=7; i++) {
+    for (i=0; i<mpi.size; i++) {
       j = i * INTERVALO + 1;
-      ret = MPI_Send( &j, 1, MPI_INT, i+1, tag, MPI_COMM_WORLD);
+      mpi.ret = mpi_send(j, i+1, mpi);
       limites[i+1] = j + INTERVALO;
       printf("\nIntervalo de %d e %d", i, limites[i+1]);
     }
 
-    j = j + INTERVALO; //Armazena o ultimo intervalo enviado 
+    j = j + INTERVALO; //Armazena o ultimo INTERVALO enviado 
 
     //Envia uma mensagem de "start" para cada um dos nos ativos
-    for( i=0; i<= 7 ; i++)
-      ret = MPI_Send(&menosUm, 1, MPI_INT, i+1, tag, MPI_COMM_WORLD);
+    for(i=0; i<mpi.size; i++)
+      mpi.ret = mpi_send(startSignal, i+1, mpi);
     
     //Armazena o valor do tempo quando comecou a busca paralela pelos numeros primos
     t1 = MPI_Wtime(); 
@@ -81,7 +89,7 @@ int main(int argc, char *argv[]) {
     forever {
 
       //Recebe o numero primo encontrado e armazena na variavel pos1
-      ret = MPI_Recv(&pos1, 1, MPI_INT, MPI_ANY_SOURCE, tag, MPI_COMM_WORLD, &status);
+      mpi.ret = mpi_recv_any(pos1, mpi);
 
       //Pega o tempo do recebimento
       t2 = MPI_Wtime();
@@ -97,17 +105,15 @@ int main(int argc, char *argv[]) {
       /*
        * Este for é responsavel por verificar os limites superiores de cada um dos nós 
        * e realizar o balanceamento de carga automatico. Caso um dos limites dos nos seja 
-       * menor que o numero encontrado o no mestre envia para o host o novo valor do intervalo
+       * menor que o numero encontrado o no mestre envia para o host o novo valor do INTERVALO
        * a ser atualizado.
        */
-      for (i=1; i<8; i++) {
+      for (i=1; i<mpi.size; i++) {
         if (limites[i] < pos1) {
-          //Envia o novo intervalo para o host que possui limite menor que o numero primo encontrado
-          ret = MPI_Send(&j, 1, MPI_INT, i, tag, MPI_COMM_WORLD);
-
-          //Atualiza o intervalo
+          //Envia o novo INTERVALO para o host que possui limite menor que o numero primo encontrado
+          mpi.ret = mpi_send(j, i, mpi);
+          //Atualiza o INTERVALO
           j = j+INTERVALO;
-
           //Atualiza o limite do no que foi atualizado
           limites[i] = j;
         }
@@ -117,31 +123,31 @@ int main(int argc, char *argv[]) {
   //Caso nao seja o no mestre o no entrara no else abaixo
   } else {
     //Recebe o limite inferior inicial
-    ret = MPI_Recv(&inferior, 1, MPI_INT, 0, tag, MPI_COMM_WORLD, &status);
+    mpi.ret = mpi_recv(it.inferior, 0, mpi);
 
     //Calcula o limite superior
-    superior = inferior + INTERVALO;
+    it.superior = it.inferior + INTERVALO;
 
     /*
      * Armazena o valor do limite inferior para posteriormente 
-     * descobrir se o intervalo deve ser atualizado ou nao
+     * descobrir se o INTERVALO deve ser atualizado ou nao
      */
-    anterior = anterior2 = inferior;
+    it.anterior = it.inferior;
 
     //Recebe a mensagem de "start"
-    ret = MPI_Recv(&aux, 1, MPI_INT, 0, tag, MPI_COMM_WORLD, &status);
+    mpi.ret = mpi_recv(dump, 0, mpi);
 
     //Inicia a busca pelo numero primo
     forever {
-      //Enquanto o limite inferior do intervalo for menor que o limite superior     
-      while (inferior < superior) {
+      //Enquanto o limite inferior do INTERVALO for menor que o limite superior     
+      while (it.inferior < it.superior) {
         //Chama a funcao que busca pelo primo 
-        resultado = verificaPrimo(inferior);
+        resultado = verificaPrimo(it.inferior);
 
         //Se o resultado diferente de -1 o numero é primo
         if (resultado != -1) {
           //Envia o numero primo para o no mestre
-          ret = MPI_Send(&resultado, 1, MPI_INT, 0, tag, MPI_COMM_WORLD);
+          mpi.ret = mpi_send(resultado, 0, mpi);
         }
 
         /*
@@ -150,36 +156,16 @@ int main(int argc, char *argv[]) {
          * regra (2^n)-1 é sempre impar, sendo assim o limite inferior 
          * é atualizado de dois em dois 
          */
-        inferior +=2;
+        it.inferior +=2;
         
-        //Realiza o receive nao bloqueante, que verifica se o no mestre enviou um novo intervalo ou nao
-        ret = MPI_Irecv(&anterior, 1, MPI_INT, 0, tag, MPI_COMM_WORLD, &request);
-
-        /*
-         * Se o valor recebido pelo receive nao bloqueante for diferente do limite inferior 
-         * recebido anteriormente o intervalo deve ser atualizado
-         */
-        if (anterior != anterior2) {
-          anterior2 = anterior;
-          inferior = anterior; //Atualiza o limite inferior 
-          superior = inferior + INTERVALO; //Atualiza o limite superior
-          printf("\nNo %d - Atualizei o intervalo para %d", rank, inferior);
-          fflush(stdout);
-        }
+        recebeNovoIntervalo(&it);
       }
 
       /*
-       * Caso o intervalo tenha terminado o nó fica esperando por um novo intervalo, a ser enviado
+       * Caso o INTERVALO tenha terminado o nó fica esperando por um novo INTERVALO, a ser enviado
        * pelo no mestre
        */
-      ret = MPI_Irecv(&anterior, 1, MPI_INT, 0, tag, MPI_COMM_WORLD, &request);
-      if (anterior != anterior2) {
-        anterior2 = anterior;
-        inferior = anterior;
-        superior = inferior + INTERVALO;
-        printf("\nNo %d - Atualizei o intervalo para %d", rank, inferior);
-        fflush(stdout);
-      }
+      recebeNovoIntervalo(&it);
     }
   }
 
@@ -212,4 +198,16 @@ int verificaPrimo(int inf){
   }
 
   return (mpz_sgn(lol) == 0) ? p : -1;
+}
+
+void recebeNovoIntervalo(intervalo *it) {
+  int aux = it->anterior;
+  mpi.ret = mpi_irecv(it->anterior, 0, mpi);
+  if (it->anterior != aux) {
+    aux = it->anterior;
+    it->inferior = it->anterior; //Atualiza o limite inferior 
+    it->superior = it->inferior + INTERVALO; //Atualiza o limite superior
+    printf("\nNo %d - Atualizei o INTERVALO para %d", mpi.rank, it->inferior);
+    fflush(stdout);
+  }
 }
